@@ -1,0 +1,5 @@
+﻿source https://nuget.org/api/v2
+
+github fsprojects/FSharp.TypeProviders.StarterPack src/ProvidedTypes.fsi 
+github fsprojects/FSharp.TypeProviders.StarterPack src/ProvidedTypes.fs 
+github fsprojects/FSharp.TypeProviders.StarterPack src/DebugProvidedTypes.fs
