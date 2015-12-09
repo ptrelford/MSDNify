@@ -27,6 +27,7 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
     let provideConstructors (def:ProvidedTypeDefinition) (ty:System.Type) =
         for ci in ty.GetConstructors() do             
             let pc = ProvidedConstructor(toParams ci)
+            pc.AddXmlDoc(ty.FullName)
             pc.InvokeCode <- fun args -> Expr.Coerce(Expr.NewObject(ci,args), typeof<obj>)
             def.AddMember(pc)  
 
@@ -90,6 +91,19 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
             provideEvents def ty
             def]
 
+    let rec referencedAssemblies (asm:System.Reflection.Assembly) =
+        let refsType = ProvidedTypeDefinition("__References", baseType=Some typeof<obj>, HideObjectMethods=true)
+        for refAsm in asm.GetReferencedAssemblies() do
+            let refType = ProvidedTypeDefinition(refAsm.Name, baseType=Some typeof<obj>, HideObjectMethods=true)
+            refType.AddXmlDoc(refAsm.FullName)            
+            refType.AddMembersDelayed(fun () ->
+                let loadedAssembly = Assembly.Load(refAsm)
+                let types = loadedAssembly.GetExportedTypes()
+                referencedAssemblies loadedAssembly::provideTypes types                              
+            )            
+            refsType.AddMember(refType)            
+        refsType
+
     let ns = "MSDNify"
     let asm = System.Reflection.Assembly.GetExecutingAssembly()
     let providedType = ProvidedTypeDefinition(asm, ns, "GroupByMemberType", Some typeof<obj>)
@@ -98,8 +112,10 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
             apply=(fun typeName parameterValues ->
                 let assemblyName = parameterValues.[0] :?> string                
                 let ty = ProvidedTypeDefinition(asm, ns, typeName, Some typeof<obj>)
-                let types = Assembly.Load(assemblyName).GetTypes()
-                ty.AddMembersDelayed(fun () -> provideTypes types)
+                let loadedAssembly = Assembly.Load(assemblyName)                
+                let types = loadedAssembly.GetTypes()
+                ty.AddMembersDelayed(fun () -> 
+                    referencedAssemblies loadedAssembly::provideTypes types)
                 ty
             )
         )

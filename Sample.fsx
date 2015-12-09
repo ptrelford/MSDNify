@@ -9,9 +9,8 @@ open MSDNify
 let name = @"PresentationFramework, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35"
 type WPF = GroupByMemberType< name >
 let button = WPF.Button()
-button.Events.Click.Add(fun x -> ())
-button.Properties.ActualHeight
-button.Properties.MinWidth <- 10.0
-button.Methods.BeginInit()
-button.Methods.EndInit()
+button.Events
 
+let doc = WPF.__References.``System.Xml``.XmlDocument()
+doc.Methods.LoadXml("<root/>")
+doc.Properties.OuterXml
