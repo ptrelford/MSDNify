@@ -21,7 +21,7 @@ let decode (text:string) =
     append 0
     result.ToString()
 
-let download url =
+let download (url:string) =
     use client = new WebClient()
-    client.DownloadString("http://referencesource.microsoft.com/PresentationFramework/src/Framework/System/Windows/Controls/Button.cs.html")
+    client.DownloadString(url)
 

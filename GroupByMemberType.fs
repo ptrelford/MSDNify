@@ -85,19 +85,24 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         def.AddMember(eventsType)
        
     let referenceSource (ty:System.Type) =
-        let url =
-            "http://referencesource.microsoft.com/" +
-            ty.Assembly.GetName().Name.Replace(".","/") +
-            "/src/Framework/" + 
-            ty.FullName.Replace(".", "/") + ".cs.html"
-        let html = Html.download url
-        let lines = html.Split('\n') |> Array.map Html.decode
-        let source = lines |> Array.map System.Web.HttpUtility.HtmlDecode |> String.concat "\r\n"
+        let readLines () =
+            let url =
+                "http://referencesource.microsoft.com/" +
+                ty.Assembly.GetName().Name.Replace(".","/") +
+                "/src/Framework/" + 
+                ty.FullName.Replace(".", "/") + ".cs.html"
+            let html = Html.download url
+            html.Split('\n') |> Array.map Html.decode        
         let sourceProp = ProvidedProperty("Source", typeof<string>)            
         sourceProp.IsStatic <- true
-        sourceProp.GetterCode <- fun args -> <@@ source @@>
-        sourceProp.AddXmlDocDelayed(fun () -> 
-            seq { for line in lines -> "<para>" + line + "</para>" }
+        sourceProp.GetterCode <- fun args -> 
+            let source = readLines () |> Array.map System.Web.HttpUtility.HtmlDecode |> String.concat "\r\n"
+            <@@ source @@>
+        sourceProp.AddXmlDocDelayed(fun () ->
+            let ns = System.Text.RegularExpressions.Regex(@"using\s+[\w?.]+;")
+            readLines ()
+            |> Seq.filter (fun line -> ns.Match(line).Success |> not)
+            |> Seq.map (fun line -> "<para>" + line + "</para>")
             |> Seq.take 30
             |> String.concat "\r\n"
             |> fun summary -> "<summary>" + summary + "</summary>"
@@ -105,7 +110,7 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         sourceProp
         
     let provideTypes (types:System.Type seq) =
-        [for ty in types |> Seq.where(fun x -> x.IsPublic) ->            
+        [for ty in types ->            
             let def = ProvidedTypeDefinition(ty.Name, baseType=Some typeof<obj>, HideObjectMethods=true)
             def.AddXmlDoc(ty.FullName)
             def.AddMemberDelayed(fun () -> referenceSource ty)
