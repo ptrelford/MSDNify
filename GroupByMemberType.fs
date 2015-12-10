@@ -13,11 +13,11 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         let ps = m.GetParameters() 
         [for p in ps -> ProvidedParameter(p.Name, p.ParameterType, p.IsOut)]
 
-    let provideFromMethod (def:ProvidedTypeDefinition) (ty:System.Type) =
+    let fromMethod (ty:System.Type) (def:ProvidedTypeDefinition) =
         let from = ProvidedMethod("From", [ProvidedParameter("instance",ty)], def)
         from.IsStaticMethod <- true
         from.InvokeCode <- fun args -> Expr.Coerce(args.[0],def)
-        def.AddMember(from)
+        from
 
     let instanceProperty (ty:System.Type) =
         let instance = ProvidedProperty("Instance", ty)
@@ -45,8 +45,8 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         propertiesType
 
     let properties (ty:System.Type) : MemberInfo list =
-        let propertiesType = propertiesType ty        
-        let propertiesProp = ProvidedProperty("Properties", propertiesType)            
+        let propertiesType = propertiesType ty
+        let propertiesProp = ProvidedProperty("Properties", propertiesType)
         propertiesProp.GetterCode <- fun args -> args.[0]
         [propertiesType; propertiesProp]
 
@@ -55,14 +55,14 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         methodsType.AddMembersDelayed(fun () ->
             [for mi in ty.GetMethods() |> Seq.filter (fun mi -> not mi.IsSpecialName) ->
                 let pm = ProvidedMethod(mi.Name, toParams mi, mi.ReturnType)
-                pm.InvokeCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty), mi, args.Tail)                
+                pm.InvokeCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty), mi, args.Tail)            
                 pm
             ])
         methodsType
 
     let methods (ty:System.Type) : MemberInfo list =
         let methodsType = methodsType ty
-        let methodsProp = ProvidedProperty("Methods", methodsType)            
+        let methodsProp = ProvidedProperty("Methods", methodsType)    
         methodsProp.GetterCode <- fun args -> args.[0]
         [methodsProp; methodsType]
 
@@ -83,7 +83,7 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         let eventsType = ProvidedTypeDefinition(ty.Name + ".Events", Some typeof<obj>, HideObjectMethods=true)                        
         eventsType.AddMembersDelayed(fun () ->
             [for ei in ty.GetEvents() ->
-                let pe = ProvidedEvent(ei.Name, ei.EventHandlerType) 
+                let pe = ProvidedEvent(ei.Name, ei.EventHandlerType)   
                 pe.AdderCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty),ei.GetAddMethod(), args.Tail)
                 pe.RemoverCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty), ei.GetRemoveMethod(), args.Tail)
                 pe
@@ -91,7 +91,7 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         eventsType
 
     let events (ty:System.Type) : MemberInfo list =
-        let eventsType = eventsType ty       
+        let eventsType = eventsType ty
         let eventsProperty eventsType =
             ProvidedProperty("Events", eventsType, GetterCode = fun args -> args.[0])
         [eventsType; eventsProperty eventsType]
@@ -121,35 +121,36 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         )
         sourceProp
         
+    let typeMembers (ty:System.Type) (def:ProvidedTypeDefinition) : MemberInfo list = [   
+        yield upcast fromMethod ty def
+        yield upcast instanceProperty ty
+        yield upcast referenceSource ty
+        yield! constructors ty
+        yield! properties ty
+        yield! methods ty
+        yield! fields ty
+        yield! events ty
+        ]      
+
     let provideTypes (types:System.Type seq) =
-        [for ty in types ->            
+        [for ty in types ->
             let def = ProvidedTypeDefinition(ty.Name, baseType=Some typeof<obj>, HideObjectMethods=true)
             def.AddXmlDoc(ty.FullName)
-            provideFromMethod def ty
-            def.AddMembersDelayed(fun () -> 
-                [   yield upcast referenceSource ty
-                    yield upcast instanceProperty ty
-                    yield! constructors ty
-                    yield! properties ty
-                    yield! methods ty
-                    yield! fields ty
-                    yield! events ty
-                ] : MemberInfo list)
+            def.AddMembersDelayed(fun () -> typeMembers ty def)
             def
         ]
 
-    let rec referencedAssemblies (asm:System.Reflection.Assembly) =
+    let rec referencedAssemblies (assembly:Assembly) =
         let refsType = ProvidedTypeDefinition("__References", baseType=Some typeof<obj>, HideObjectMethods=true)
-        for refAsm in asm.GetReferencedAssemblies() do
+        for refAsm in assembly.GetReferencedAssemblies() do
             let refType = ProvidedTypeDefinition(refAsm.Name, baseType=Some typeof<obj>, HideObjectMethods=true)
             refType.AddXmlDoc(refAsm.FullName)
-            refType.AddMembersDelayed(fun () ->
-                let loadedAssembly = Assembly.Load(refAsm)
-                let types = loadedAssembly.GetExportedTypes()
-                referencedAssemblies loadedAssembly::provideTypes types                   
-            )
+            refType.AddMembersDelayed(fun () -> Assembly.Load(refAsm) |> assemblyMembers)
             refsType.AddMember(refType)
         refsType
+    and assemblyMembers (assembly:Assembly) =        
+        let types = assembly.GetExportedTypes()
+        referencedAssemblies assembly :: provideTypes types
 
     let ns = "MSDNify"
     let asm = System.Reflection.Assembly.GetExecutingAssembly()
@@ -157,12 +158,9 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
     do  providedType.DefineStaticParameters(
             staticParameters=[ProvidedStaticParameter("assemblyName", typeof<string>)],
             apply=(fun typeName parameterValues ->
-                let assemblyName = parameterValues.[0] :?> string
-                let ty = ProvidedTypeDefinition(asm, ns, typeName, Some typeof<obj>)
-                let loadedAssembly = Assembly.Load(assemblyName)     
-                let types = loadedAssembly.ExportedTypes
-                ty.AddMembersDelayed(fun () ->
-                    referencedAssemblies loadedAssembly::provideTypes types)
+                let assemblyString = parameterValues.[0] :?> string
+                let ty = ProvidedTypeDefinition(asm, ns, typeName, Some typeof<obj>)                                
+                ty.AddMembersDelayed(fun () -> Assembly.Load(assemblyString) |> assemblyMembers)
                 ty
             )
         )
