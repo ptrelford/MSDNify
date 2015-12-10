@@ -19,22 +19,20 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         from.InvokeCode <- fun args -> Expr.Coerce(args.[0],def)
         def.AddMember(from)
 
-    let provideInstanceProperty (def:ProvidedTypeDefinition) (ty:System.Type) =
+    let instanceProperty (ty:System.Type) =
         let instance = ProvidedProperty("Instance", ty)
         instance.GetterCode <- fun args -> Expr.Coerce(args.[0],ty)
-        def.AddMember(instance)
+        instance
 
-    let provideConstructors (def:ProvidedTypeDefinition) (ty:System.Type) =
-        for ci in ty.GetConstructors() do             
+    let constructors (ty:System.Type) : MemberInfo list =
+        [for ci in ty.GetConstructors() ->             
             let pc = ProvidedConstructor(toParams ci)
             pc.AddXmlDoc(ty.FullName)
             pc.InvokeCode <- fun args -> Expr.Coerce(Expr.NewObject(ci,args), typeof<obj>)
-            def.AddMember(pc)  
-
-    let provideProperties (def:ProvidedTypeDefinition) (ty:System.Type) =
+            upcast pc]
+                       
+    let propertiesType (ty:System.Type) =
         let propertiesType = ProvidedTypeDefinition(ty.Name + ".Properties", Some typeof<obj>, HideObjectMethods=true)
-        let propertiesProp = ProvidedProperty("Properties", propertiesType)            
-        propertiesProp.GetterCode <- fun args -> args.[0]
         propertiesType.AddMembersDelayed(fun () ->
             [for pi in ty.GetProperties() ->
                 let pp = ProvidedProperty(pi.Name, pi.PropertyType)
@@ -43,46 +41,60 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
                 if pi.CanWrite then
                     pp.SetterCode <- fun args -> Expr.PropertySet(Expr.Coerce(args.[0],ty), pi, args.[1])                
                 pp
-            ])
-        def.AddMember(propertiesProp)
-        def.AddMember(propertiesType)
+            ])        
+        propertiesType
 
-    let provideMethods (def:ProvidedTypeDefinition) (ty:System.Type) =
+    let properties (ty:System.Type) : MemberInfo list =
+        let propertiesType = propertiesType ty        
+        let propertiesProp = ProvidedProperty("Properties", propertiesType)            
+        propertiesProp.GetterCode <- fun args -> args.[0]
+        [propertiesType; propertiesProp]
+
+    let methodsType (ty:System.Type) =
         let methodsType = ProvidedTypeDefinition(ty.Name + ".Methods", Some typeof<obj>, HideObjectMethods=true)
-        let methodsProp = ProvidedProperty("Methods", methodsType)            
-        methodsProp.GetterCode <- fun args -> args.[0]
         methodsType.AddMembersDelayed(fun () ->
             [for mi in ty.GetMethods() |> Seq.filter (fun mi -> not mi.IsSpecialName) ->
                 let pm = ProvidedMethod(mi.Name, toParams mi, mi.ReturnType)
                 pm.InvokeCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty), mi, args.Tail)                
                 pm
             ])
-        def.AddMember(methodsProp)
-        def.AddMember(methodsType)
+        methodsType
 
-    let provideFields (def:ProvidedTypeDefinition) (ty:System.Type) =
+    let methods (ty:System.Type) : MemberInfo list =
+        let methodsType = methodsType ty
+        let methodsProp = ProvidedProperty("Methods", methodsType)            
+        methodsProp.GetterCode <- fun args -> args.[0]
+        [methodsProp; methodsType]
+
+    let fieldsType (ty:System.Type) =
         let fieldsType = ProvidedTypeDefinition(ty.Name + ".Fields", Some typeof<obj>, HideObjectMethods=true)
-        let fieldsProp = ProvidedProperty("Fields", fieldsType)            
-        fieldsProp.GetterCode <- fun args -> args.[0]
         fieldsType.AddMembersDelayed(fun () ->
             [for fi in ty.GetFields() -> ProvidedField(fi.Name, fi.FieldType)]
-        ) 
-        def.AddMember(fieldsProp)
-        def.AddMember(fieldsType)
+        )
+        fieldsType
 
-    let provideEvents (def:ProvidedTypeDefinition) (ty:System.Type) =
+    let fields (ty:System.Type) : MemberInfo list =
+        let fieldsType = fieldsType ty
+        let fieldsProperty = ProvidedProperty("Fields", fieldsType)
+        fieldsProperty.GetterCode <- fun args -> args.[0]
+        [fieldsType; fieldsProperty]
+
+    let eventsType (ty:System.Type) =
         let eventsType = ProvidedTypeDefinition(ty.Name + ".Events", Some typeof<obj>, HideObjectMethods=true)                        
-        let eventsProp = ProvidedProperty("Events", eventsType)            
-        eventsProp.GetterCode <- fun args -> args.[0]
         eventsType.AddMembersDelayed(fun () ->
             [for ei in ty.GetEvents() ->
                 let pe = ProvidedEvent(ei.Name, ei.EventHandlerType) 
                 pe.AdderCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty),ei.GetAddMethod(), args.Tail)
                 pe.RemoverCode <- fun args -> Expr.Call(Expr.Coerce(args.Head,ty), ei.GetRemoveMethod(), args.Tail)
                 pe
-            ])        
-        def.AddMember(eventsProp)
-        def.AddMember(eventsType)
+            ])
+        eventsType
+
+    let events (ty:System.Type) : MemberInfo list =
+        let eventsType = eventsType ty       
+        let eventsProperty eventsType =
+            ProvidedProperty("Events", eventsType, GetterCode = fun args -> args.[0])
+        [eventsType; eventsProperty eventsType]
        
     let referenceSource (ty:System.Type) =
         let readLines () =
@@ -113,15 +125,18 @@ type GroupByMemberTypeProvider (config:TypeProviderConfig) as this =
         [for ty in types ->            
             let def = ProvidedTypeDefinition(ty.Name, baseType=Some typeof<obj>, HideObjectMethods=true)
             def.AddXmlDoc(ty.FullName)
-            def.AddMemberDelayed(fun () -> referenceSource ty)
             provideFromMethod def ty
-            provideInstanceProperty def ty
-            provideConstructors def ty              
-            provideProperties def ty
-            provideMethods def ty
-            provideFields def ty
-            provideEvents def ty
-            def]
+            def.AddMembersDelayed(fun () -> 
+                [   yield upcast referenceSource ty
+                    yield upcast instanceProperty ty
+                    yield! constructors ty
+                    yield! properties ty
+                    yield! methods ty
+                    yield! fields ty
+                    yield! events ty
+                ] : MemberInfo list)
+            def
+        ]
 
     let rec referencedAssemblies (asm:System.Reflection.Assembly) =
         let refsType = ProvidedTypeDefinition("__References", baseType=Some typeof<obj>, HideObjectMethods=true)
